@@ -1,0 +1,22 @@
+{
+  "defaultBatchSize": 200,
+  "requestTimeoutMs": 30000,
+  "refreshIntervalMs": 120000,
+  "chains": {
+    "1": {
+      "name": "Ethereum",
+      "rpcUrl": "https://eth.llamarpc.com",
+      "multicall3": "0xca11bde05977b3631167028862be2a173976ca11"
+    },
+    "56": {
+      "name": "BNB Chain",
+      "rpcUrl": "https://bsc-dataseed.binance.org",
+      "multicall3": "0xca11bde05977b3631167028862be2a173976ca11"
+    },
+    "8453": {
+      "name": "Base",
+      "rpcUrl": "https://mainnet.base.org",
+      "multicall3": "0xca11bde05977b3631167028862be2a173976ca11"
+    }
+  }
+}
