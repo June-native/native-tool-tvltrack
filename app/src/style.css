@@ -215,6 +215,8 @@ code {
   color: #e5e7eb;
   border-radius: 12px;
   padding: 12px;
+  height: 50vh;
+  overflow: auto;
 }
 
 .debug-panel h2 {

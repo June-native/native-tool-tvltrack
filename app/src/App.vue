@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import {
   getBatchSize,
   getDefaultRpcUrlsByChainId,
@@ -28,6 +28,7 @@ const loadedVaults = ref<Record<string, VaultDashboard>>({})
 const lastLoadedAt = ref<string | null>(null)
 const batchSizeOverride = ref<number>(getBatchSize())
 const rpcOverrides = ref<RpcOverrides>(getDefaultRpcUrlsByChainId())
+const debugPanelRef = ref<HTMLElement | null>(null)
 
 const BATCH_SIZE_COOKIE = 'tvl_batch_size'
 const RPC_OVERRIDES_COOKIE = 'tvl_rpc_overrides'
@@ -71,6 +72,15 @@ function loadOverridesFromCookies() {
       // Ignore malformed cookie and keep defaults
     }
   }
+}
+
+function scrollDebugToBottom() {
+  if (!loading.value) return
+  if (!showDebug.value) return
+  nextTick(() => {
+    if (!debugPanelRef.value) return
+    debugPanelRef.value.scrollTop = debugPanelRef.value.scrollHeight
+  })
 }
 
 const selectedVault = computed<VaultDashboard | null>(() => {
@@ -140,11 +150,16 @@ async function refresh() {
     error.value = err instanceof Error ? err.message : String(err)
   } finally {
     loading.value = false
+    showDebug.value = false
   }
 }
 
 onMounted(() => {
   loadOverridesFromCookies()
+})
+
+watch(rpcLogs, () => {
+  scrollDebugToBottom()
 })
 </script>
 
@@ -243,7 +258,7 @@ onMounted(() => {
       </ul>
     </section>
 
-    <section v-if="showDebug" class="debug-panel">
+    <section v-if="showDebug" ref="debugPanelRef" class="debug-panel">
       <h2>RPC debug log</h2>
       <div class="debug-head">
         <span>Time</span>
