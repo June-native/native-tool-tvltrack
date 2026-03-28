@@ -43,6 +43,8 @@ type VaultEntry = {
   chainId: number
   decimals: number
   tokenPrice: number
+  /** If > 0, each user's boostable USD is capped at this amount. */
+  perUserUsdLimit?: number
 }
 
 type ConfigChain = {
@@ -64,6 +66,9 @@ export type UserPosition = {
   user: string
   rawBalance: bigint
   balance: number
+  /** Uncapped TVL USD from balance * exchange * token price. */
+  usdValueUncapped: number
+  /** Boostable TVL USD after per-user cap (same as uncapped when limit is 0). */
   usdValue: number
 }
 
@@ -72,7 +77,9 @@ export type VaultDashboard = {
   chainName: string
   exchangeRate: number
   tokenPrice: number
+  perUserUsdLimit: number
   totalUsd: number
+  totalUsdUncapped: number
   holdersCount: number
   users: UserPosition[]
 }
@@ -100,9 +107,13 @@ export type DashboardResult = {
 
 export type VaultCatalogEntry = VaultEntry
 export type RpcOverrides = Record<string, string>
+/** Lowercase vault address -> per-user USD cap (0 = no cap). Omitted key uses vaults.json. */
+export type PerUserUsdLimitOverrides = Record<string, number>
+
 export type LoadOverrides = {
   batchSize?: number
   rpcUrlsByChainId?: RpcOverrides
+  perUserUsdLimitByVault?: PerUserUsdLimitOverrides
 }
 
 function parseEligibleUsers(input: string): string[] {
@@ -118,6 +129,16 @@ function chunk<T>(items: T[], size: number): T[][] {
     chunks.push(items.slice(index, index + size))
   }
   return chunks
+}
+
+function mergeVaultWithPerUserCapOverride(vault: VaultEntry, overrides?: LoadOverrides): VaultEntry {
+  const map = overrides?.perUserUsdLimitByVault
+  const key = vault.address.toLowerCase()
+  if (map && Object.prototype.hasOwnProperty.call(map, key)) {
+    const cap = map[key]
+    return { ...vault, perUserUsdLimit: Number.isFinite(cap) ? cap : (vault.perUserUsdLimit ?? 0) }
+  }
+  return vault
 }
 
 function getSuggestions(vaults: VaultEntry[], config: RuntimeConfig): string[] {
@@ -258,11 +279,14 @@ async function loadVaultDashboard(
       if (rawBalance === 0n) return
 
       const balance = Number(formatUnits(rawBalance, Number(wnlpDecimals)))
-      const usdValue = balance * exchangeRate * vault.tokenPrice
+      const usdValueUncapped = balance * exchangeRate * vault.tokenPrice
+      const limitUsd = vault.perUserUsdLimit && vault.perUserUsdLimit > 0 ? vault.perUserUsdLimit : null
+      const usdValue = limitUsd !== null ? Math.min(usdValueUncapped, limitUsd) : usdValueUncapped
       userResults.push({
         user: usersBatch[index],
         rawBalance,
         balance,
+        usdValueUncapped,
         usdValue,
       })
     })
@@ -270,13 +294,17 @@ async function loadVaultDashboard(
 
   userResults.sort((a, b) => b.usdValue - a.usdValue)
   const totalUsd = userResults.reduce((sum, item) => sum + item.usdValue, 0)
+  const totalUsdUncapped = userResults.reduce((sum, item) => sum + item.usdValueUncapped, 0)
+  const perUserUsdLimit = vault.perUserUsdLimit ?? 0
 
   return {
     vault,
     chainName: chain.name,
     exchangeRate,
     tokenPrice: vault.tokenPrice,
+    perUserUsdLimit,
     totalUsd,
+    totalUsdUncapped,
     holdersCount: userResults.length,
     users: userResults,
   }
@@ -355,9 +383,11 @@ export async function loadDashboardData(
     throw new Error(`Selected vault not found: ${selectedVaultAddress}`)
   }
 
+  const vaultForLoad = mergeVaultWithPerUserCapOverride(selectedVault, overrides)
+
   let vaultData: VaultDashboard[] = []
   try {
-    const loadedVault = await loadVaultDashboard(selectedVault, users, config, batchSize, rpcDebug, onLog)
+    const loadedVault = await loadVaultDashboard(vaultForLoad, users, config, batchSize, rpcDebug, onLog)
     vaultData = [loadedVault]
   } catch (error) {
     const errorEntry: RpcDebugEntry = {

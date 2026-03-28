@@ -5,21 +5,24 @@
             "symbol": "EthUSDT",
             "chainId": 1,
             "decimals": 6,
-            "tokenPrice": 1.0
+            "tokenPrice": 1.0,
+            "perUserUsdLimit": 50000
         },
         {
             "address": "0xEA5FF211eF700DccC521a1e6501C9fe1B95D8EE7",
             "symbol": "BscUSDT",
             "chainId": 56,
             "decimals": 18,
-            "tokenPrice": 1.0
+            "tokenPrice": 1.0,
+            "perUserUsdLimit": 50000
         },
         {
             "address": "0xe745b0565CECB4612A41EaE78319Bf3Ca8063e6f",
             "symbol": "BaseUSDC",
             "chainId": 8453,
             "decimals": 6,
-            "tokenPrice": 1.0
+            "tokenPrice": 1.0,
+            "perUserUsdLimit": 50000
         }
     ]
 }

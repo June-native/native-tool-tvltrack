@@ -8,6 +8,7 @@ import {
   loadDashboardData,
   type DashboardResult,
   type LoadOverrides,
+  type PerUserUsdLimitOverrides,
   type RpcDebugEntry,
   type RpcOverrides,
   type UserPosition,
@@ -28,10 +29,13 @@ const loadedVaults = ref<Record<string, VaultDashboard>>({})
 const lastLoadedAt = ref<string | null>(null)
 const batchSizeOverride = ref<number>(getBatchSize())
 const rpcOverrides = ref<RpcOverrides>(getDefaultRpcUrlsByChainId())
+const perUserCapOverrides = ref<PerUserUsdLimitOverrides>({})
+const capDraft = ref('')
 const debugPanelRef = ref<HTMLElement | null>(null)
 
 const BATCH_SIZE_COOKIE = 'tvl_batch_size'
 const RPC_OVERRIDES_COOKIE = 'tvl_rpc_overrides'
+const PER_USER_CAP_COOKIE = 'tvl_per_user_cap_overrides'
 
 function setCookie(name: string, value: string, days = 365) {
   const expires = new Date(Date.now() + days * 24 * 60 * 60 * 1000).toUTCString()
@@ -46,9 +50,35 @@ function getCookie(name: string): string | null {
   return decodeURIComponent(found.slice(prefix.length))
 }
 
+function normalizeCapOverrides(raw: Record<string, unknown>): PerUserUsdLimitOverrides {
+  const out: PerUserUsdLimitOverrides = {}
+  for (const [key, value] of Object.entries(raw)) {
+    const n = Number(value)
+    if (Number.isFinite(n) && n >= 0) {
+      out[key.toLowerCase()] = n
+    }
+  }
+  return out
+}
+
 function saveOverridesToCookies() {
+  if (selectedVaultAddress.value) {
+    const key = selectedVaultAddress.value.toLowerCase()
+    const next = { ...perUserCapOverrides.value }
+    const trimmed = capDraft.value.trim()
+    if (trimmed === '') {
+      delete next[key]
+    } else {
+      const n = Number(trimmed)
+      if (Number.isFinite(n) && n >= 0) {
+        next[key] = n
+      }
+    }
+    perUserCapOverrides.value = next
+  }
   setCookie(BATCH_SIZE_COOKIE, String(batchSizeOverride.value))
   setCookie(RPC_OVERRIDES_COOKIE, JSON.stringify(rpcOverrides.value))
+  setCookie(PER_USER_CAP_COOKIE, JSON.stringify(perUserCapOverrides.value))
 }
 
 function loadOverridesFromCookies() {
@@ -70,6 +100,16 @@ function loadOverridesFromCookies() {
       }
     } catch {
       // Ignore malformed cookie and keep defaults
+    }
+  }
+
+  const capCookie = getCookie(PER_USER_CAP_COOKIE)
+  if (capCookie) {
+    try {
+      const parsed = JSON.parse(capCookie) as Record<string, unknown>
+      perUserCapOverrides.value = normalizeCapOverrides(parsed)
+    } catch {
+      // Ignore malformed cookie
     }
   }
 }
@@ -96,6 +136,68 @@ const selectedVaultMeta = computed(() => {
 const selectedChainId = computed<string | null>(() => {
   return selectedVaultMeta.value ? String(selectedVaultMeta.value.chainId) : null
 })
+
+const capPlaceholder = computed(() => {
+  if (!selectedVaultMeta.value) return 'Select a vault'
+  const fromFile = selectedVaultMeta.value.perUserUsdLimit ?? 0
+  return fromFile > 0 ? `From config: ${fromFile} (empty = use this)` : 'From config: no cap (empty = use this)'
+})
+
+function syncCapDraftFromState() {
+  const addr = selectedVaultAddress.value
+  if (!addr) {
+    capDraft.value = ''
+    return
+  }
+  const key = addr.toLowerCase()
+  if (Object.prototype.hasOwnProperty.call(perUserCapOverrides.value, key)) {
+    capDraft.value = String(perUserCapOverrides.value[key])
+  } else {
+    capDraft.value = ''
+  }
+}
+
+/** Effective cap map for Load: draft wins if non-empty; else cookie entry for vault; else file (via loader). */
+function buildCapMapForLoad(): PerUserUsdLimitOverrides {
+  const base = { ...perUserCapOverrides.value }
+  const addr = selectedVaultAddress.value
+  if (!addr) return base
+  const key = addr.toLowerCase()
+  const trimmed = capDraft.value.trim()
+  if (trimmed !== '') {
+    const n = Number(trimmed)
+    if (Number.isFinite(n) && n >= 0) {
+      base[key] = n
+    }
+  }
+  return base
+}
+
+/** Display like `0xabc12...9def` (0x + 5 hex + ... + 4 hex). */
+function maskAddress(address: string): string {
+  const a = address.trim().toLowerCase()
+  if (!a.startsWith('0x') || a.length < 13) {
+    return a
+  }
+  return `${a.slice(0, 7)}...${a.slice(-4)}`
+}
+
+const lastCopiedAddress = ref<string | null>(null)
+let copyFeedbackTimer: ReturnType<typeof setTimeout> | null = null
+
+async function copyUserAddress(address: string) {
+  const full = address.trim()
+  try {
+    await navigator.clipboard.writeText(full)
+    lastCopiedAddress.value = full.toLowerCase()
+    if (copyFeedbackTimer) clearTimeout(copyFeedbackTimer)
+    copyFeedbackTimer = setTimeout(() => {
+      lastCopiedAddress.value = null
+    }, 2000)
+  } catch {
+    lastCopiedAddress.value = null
+  }
+}
 
 const sortedUsers = computed<UserPosition[]>(() => {
   if (!selectedVault.value) return []
@@ -134,6 +236,7 @@ async function refresh() {
     const overrides: LoadOverrides = {
       batchSize: batchSizeOverride.value,
       rpcUrlsByChainId: rpcOverrides.value,
+      perUserUsdLimitByVault: buildCapMapForLoad(),
     }
     const data = await loadDashboardData(selectedVaultAddress.value, overrides, (entry) => {
       rpcLogs.value = [...rpcLogs.value, entry]
@@ -156,6 +259,11 @@ async function refresh() {
 
 onMounted(() => {
   loadOverridesFromCookies()
+  syncCapDraftFromState()
+})
+
+watch(selectedVaultAddress, () => {
+  syncCapDraftFromState()
 })
 
 watch(rpcLogs, () => {
@@ -213,6 +321,21 @@ watch(rpcLogs, () => {
           />
         </div>
         <p v-else class="hint">Select a vault to configure its RPC override.</p>
+        <div v-if="selectedVaultAddress" class="override-row">
+          <label for="capDraft">Per-user USD cap</label>
+          <input
+            id="capDraft"
+            v-model="capDraft"
+            type="text"
+            inputmode="decimal"
+            autocomplete="off"
+            :placeholder="capPlaceholder"
+          />
+        </div>
+        <p v-if="selectedVaultAddress" class="hint override-hint">
+          Override applies to the selected vault only. Empty field uses <code>vaults.json</code>. Saved with the button
+          below (cookie takes priority over file when set).
+        </p>
       </div>
       <button class="refresh secondary" @click="saveOverridesToCookies">Save overrides to cookies</button>
     </section>
@@ -297,13 +420,25 @@ watch(rpcLogs, () => {
           <p><strong>Exchange rate:</strong> {{ selectedVault.exchangeRate.toFixed(8) }}</p>
           <p><strong>Holders:</strong> {{ selectedVault.holdersCount.toLocaleString() }}</p>
           <p>
-            <strong>Vault USD:</strong>
+            <strong>Per-user USD cap:</strong>
+            {{
+              selectedVault.perUserUsdLimit > 0
+                ? `$${selectedVault.perUserUsdLimit.toLocaleString(undefined, { maximumFractionDigits: 2 })}`
+                : 'None'
+            }}
+          </p>
+          <p>
+            <strong>Vault USD (capped / boostable):</strong>
             ${{ selectedVault.totalUsd.toLocaleString(undefined, { maximumFractionDigits: 2 }) }}
+          </p>
+          <p v-if="selectedVault.perUserUsdLimit > 0">
+            <strong>Vault USD (uncapped raw):</strong>
+            ${{ selectedVault.totalUsdUncapped.toLocaleString(undefined, { maximumFractionDigits: 2 }) }}
           </p>
         </article>
 
         <article class="card users">
-          <h2>Top users by USD</h2>
+          <h2>Users (sort uses capped USD)</h2>
           <div class="sort-wrap">
             <label for="sortBy">Sort by:</label>
             <select id="sortBy" v-model="userSort">
@@ -317,11 +452,22 @@ watch(rpcLogs, () => {
           <div class="table-head">
             <span>User</span>
             <span>wNLP</span>
-            <span>USD</span>
+            <span>USD (raw)</span>
+            <span>USD (capped)</span>
           </div>
           <div v-for="user in sortedUsers" :key="user.user" class="row">
-            <code>{{ user.user }}</code>
+            <button
+              type="button"
+              class="address-copy"
+              :title="`Click to copy: ${user.user}`"
+              @click="copyUserAddress(user.user)"
+            >
+              <code>{{ maskAddress(user.user) }}</code>
+              <span v-if="lastCopiedAddress === user.user.toLowerCase()" class="copied-hint" aria-live="polite"
+                >Copied</span>
+            </button>
             <span>{{ user.balance.toLocaleString(undefined, { maximumFractionDigits: 6 }) }}</span>
+            <span>${{ user.usdValueUncapped.toLocaleString(undefined, { maximumFractionDigits: 2 }) }}</span>
             <span>${{ user.usdValue.toLocaleString(undefined, { maximumFractionDigits: 2 }) }}</span>
           </div>
         </article>
